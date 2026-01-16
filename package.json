@@ -1,0 +1,66 @@
+{
+  "name": "@better-notes/cli",
+  "version": "0.1.0",
+  "description": "A powerful notes management system with MCP server integration, full-text search, and git sync",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "better-notes": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start:mcp": "node dist/index.js",
+    "start:daemon": "node dist/daemon.js",
+    "lint": "eslint src/",
+    "postinstall": "node dist/postinstall.js 2>/dev/null || true"
+  },
+  "keywords": [
+    "notes",
+    "mcp",
+    "markdown",
+    "search",
+    "git-sync",
+    "sqlite",
+    "cli",
+    "claude",
+    "ai"
+  ],
+  "author": "Logan Spencer (laspencer91)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/laspencer91/better-notes.git"
+  },
+  "homepage": "https://github.com/laspencer91/better-notes#readme",
+  "bugs": {
+    "url": "https://github.com/laspencer91/better-notes/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^11.0.0",
+    "chalk": "^5.3.0",
+    "chokidar": "^3.6.0",
+    "commander": "^12.1.0",
+    "gray-matter": "^4.0.3",
+    "prompts": "^2.4.2",
+    "simple-git": "^3.25.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.14.0",
+    "@types/prompts": "^2.4.9",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

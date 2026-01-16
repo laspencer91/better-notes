@@ -1,0 +1,381 @@
+#!/usr/bin/env node
+
+import { Command } from "commander";
+import chalk from "chalk";
+import { spawn } from "child_process";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import {
+  loadConfig,
+  configExists,
+  getConfigPath,
+  ensureDirectories,
+  getNotesDirectory,
+} from "./config/index.js";
+import { runInteractiveSetup } from "./setup/interactive.js";
+import { startDaemon, stopDaemon, getDaemonStatus, startDaemonBackground } from "./daemon.js";
+import { NoteManager } from "./notes/manager.js";
+import { Indexer } from "./index/indexer.js";
+import { SearchEngine } from "./notes/search.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const program = new Command();
+
+program
+  .name("better-notes")
+  .description("A powerful notes management system with MCP integration")
+  .version("0.1.0");
+
+// Init command
+program
+  .command("init")
+  .description("Initialize better-notes with interactive setup")
+  .option("-f, --force", "Overwrite existing configuration")
+  .action(async (options) => {
+    await runInteractiveSetup({ force: options.force });
+  });
+
+// Serve command (MCP server)
+program
+  .command("serve")
+  .description("Start the MCP server (for Claude integration)")
+  .action(async () => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    // Import and run the MCP server
+    const serverPath = join(__dirname, "index.js");
+    const child = spawn(process.execPath, [serverPath], {
+      stdio: "inherit",
+    });
+
+    child.on("error", (error) => {
+      console.error(chalk.red(`Failed to start MCP server: ${error.message}`));
+      process.exit(1);
+    });
+
+    child.on("exit", (code) => {
+      process.exit(code || 0);
+    });
+  });
+
+// Daemon commands
+const daemonCmd = program.command("daemon").description("Manage the background daemon");
+
+daemonCmd
+  .command("start")
+  .description("Start the background daemon")
+  .option("-f, --foreground", "Run in foreground (don't detach)")
+  .action(async (options) => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const status = getDaemonStatus();
+    if (status.running) {
+      console.log(chalk.yellow(`Daemon is already running (PID: ${status.pid})`));
+      return;
+    }
+
+    if (options.foreground) {
+      await startDaemon();
+    } else {
+      console.log("Starting daemon in background...");
+      startDaemonBackground();
+
+      // Wait a moment and check if it started
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const newStatus = getDaemonStatus();
+      if (newStatus.running) {
+        console.log(chalk.green(`Daemon started (PID: ${newStatus.pid})`));
+      } else {
+        console.log(chalk.yellow("Daemon may have failed to start. Check logs."));
+      }
+    }
+  });
+
+daemonCmd
+  .command("stop")
+  .description("Stop the background daemon")
+  .action(() => {
+    stopDaemon();
+  });
+
+daemonCmd
+  .command("status")
+  .description("Check daemon status")
+  .action(() => {
+    const status = getDaemonStatus();
+    if (status.running) {
+      console.log(chalk.green(`Daemon is running (PID: ${status.pid})`));
+    } else {
+      console.log(chalk.yellow("Daemon is not running"));
+    }
+  });
+
+daemonCmd
+  .command("restart")
+  .description("Restart the background daemon")
+  .action(async () => {
+    stopDaemon();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    startDaemonBackground();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const status = getDaemonStatus();
+    if (status.running) {
+      console.log(chalk.green(`Daemon restarted (PID: ${status.pid})`));
+    } else {
+      console.log(chalk.yellow("Daemon may have failed to restart. Check logs."));
+    }
+  });
+
+// Note commands
+const noteCmd = program.command("note").description("Manage notes");
+
+noteCmd
+  .command("create")
+  .description("Create a new note")
+  .requiredOption("-t, --title <title>", "Note title")
+  .option("-c, --content <content>", "Note content")
+  .option("-C, --category <category>", "Note category")
+  .option("--tags <tags>", "Comma-separated tags")
+  .option("-d, --date <date>", "Date (YYYY-MM-DD)")
+  .action(async (options) => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    ensureDirectories(config);
+    const noteManager = new NoteManager(config);
+    const indexer = new Indexer(config);
+
+    const note = await noteManager.createNote({
+      title: options.title,
+      content: options.content || "",
+      category: options.category,
+      tags: options.tags ? options.tags.split(",").map((t: string) => t.trim()) : undefined,
+      date: options.date,
+    });
+
+    indexer.indexNote(note);
+    indexer.close();
+
+    console.log(chalk.green(`Created note: ${note.filePath}`));
+  });
+
+noteCmd
+  .command("today")
+  .description("View today's note")
+  .action(async () => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    const noteManager = new NoteManager(config);
+    const note = await noteManager.getNoteForToday();
+
+    if (!note) {
+      console.log(chalk.yellow("No note for today."));
+      return;
+    }
+
+    console.log(chalk.bold(`\n${note.frontmatter.title}\n`));
+    console.log(chalk.dim(`Date: ${note.date}`));
+    console.log(chalk.dim(`Category: ${note.frontmatter.category}`));
+    console.log(chalk.dim(`Tags: ${note.frontmatter.tags.join(", ") || "none"}`));
+    console.log(chalk.dim(`Mentions: ${note.frontmatter.mentions.join(", ") || "none"}\n`));
+    console.log(note.content);
+  });
+
+noteCmd
+  .command("recent")
+  .description("List recent notes")
+  .option("-n, --days <days>", "Number of days", "7")
+  .action(async (options) => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    const noteManager = new NoteManager(config);
+    const notes = await noteManager.getRecentNotes(parseInt(options.days, 10));
+
+    if (notes.length === 0) {
+      console.log(chalk.yellow(`No notes in the past ${options.days} days.`));
+      return;
+    }
+
+    console.log(chalk.bold(`\nRecent notes (${notes.length}):\n`));
+    for (const note of notes) {
+      console.log(
+        `${chalk.cyan(note.date)} - ${note.frontmatter.title} ${chalk.dim(`[${note.frontmatter.category}]`)}`
+      );
+    }
+  });
+
+// Search command
+program
+  .command("search <query>")
+  .description("Search notes")
+  .option("-l, --limit <limit>", "Maximum results", "20")
+  .action(async (query, options) => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    const indexer = new Indexer(config);
+    const searchEngine = new SearchEngine(indexer, config);
+
+    const results = await searchEngine.search(query);
+    indexer.close();
+
+    if (results.length === 0) {
+      console.log(chalk.yellow("No results found."));
+      return;
+    }
+
+    console.log(chalk.bold(`\nFound ${results.length} results:\n`));
+    for (const result of results) {
+      console.log(`${chalk.cyan(result.date)} - ${chalk.bold(result.title)}`);
+      console.log(chalk.dim(result.snippet.replace(/<\/?mark>/g, "")));
+      console.log();
+    }
+  });
+
+// Index command
+const indexCmd = program.command("index").description("Manage the search index");
+
+indexCmd
+  .command("rebuild")
+  .description("Rebuild the search index from markdown files")
+  .action(async () => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    const indexer = new Indexer(config);
+    const noteManager = new NoteManager(config);
+
+    console.log("Rebuilding index...");
+    const count = await indexer.rebuildIndex(noteManager);
+    indexer.close();
+
+    console.log(chalk.green(`Index rebuilt: ${count} notes indexed.`));
+  });
+
+indexCmd
+  .command("stats")
+  .description("Show index statistics")
+  .action(() => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    const indexer = new Indexer(config);
+    const stats = indexer.getStats();
+    indexer.close();
+
+    console.log(chalk.bold("\nIndex Statistics:\n"));
+    console.log(`Notes indexed: ${stats.noteCount}`);
+    console.log(`Entities tracked: ${stats.entityCount}`);
+    console.log(`Last indexed: ${stats.lastIndexed || "never"}`);
+  });
+
+// Config command
+program
+  .command("config")
+  .description("Show current configuration")
+  .action(() => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    console.log(chalk.bold("\nConfiguration:\n"));
+    console.log(`Config file: ${getConfigPath()}`);
+    console.log(`Notes directory: ${getNotesDirectory(config)}`);
+    console.log(`Git sync: ${config.gitSync.enabled ? "enabled" : "disabled"}`);
+    console.log(`Daemon: ${config.daemon.enabled ? "enabled" : "disabled"}`);
+    console.log(`Categories: ${config.categories.join(", ")}`);
+  });
+
+// Install service command
+program
+  .command("install-service")
+  .description("Install as a system service (systemd/launchd)")
+  .action(async () => {
+    const platform = process.platform;
+
+    if (platform === "linux") {
+      console.log(chalk.bold("\nTo install as a systemd service:\n"));
+      console.log("1. Create the service file:");
+      console.log(chalk.dim("   sudo nano /etc/systemd/system/better-notes.service\n"));
+      console.log("2. Add the following content:");
+      console.log(chalk.cyan(`
+[Unit]
+Description=Better Notes Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=${process.env.USER}
+ExecStart=${process.execPath} ${join(__dirname, "daemon.js")} run
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+`));
+      console.log("3. Enable and start:");
+      console.log(chalk.dim("   sudo systemctl enable better-notes"));
+      console.log(chalk.dim("   sudo systemctl start better-notes"));
+    } else if (platform === "darwin") {
+      console.log(chalk.bold("\nTo install as a launchd service:\n"));
+      console.log("1. Create the plist file:");
+      console.log(chalk.dim(`   nano ~/Library/LaunchAgents/com.better-notes.daemon.plist\n`));
+      console.log("2. Add the following content:");
+      console.log(chalk.cyan(`
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.better-notes.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${process.execPath}</string>
+        <string>${join(__dirname, "daemon.js")}</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+`));
+      console.log("3. Load the service:");
+      console.log(chalk.dim("   launchctl load ~/Library/LaunchAgents/com.better-notes.daemon.plist"));
+    } else {
+      console.log(chalk.yellow("Service installation is only supported on Linux (systemd) and macOS (launchd)."));
+    }
+  });
+
+program.parse();
