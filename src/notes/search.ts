@@ -194,6 +194,12 @@ export class SearchEngine {
       results = this.indexer.searchByDateRange(formatDate(weekAgo), today, limit);
     }
 
+    // Regenerate snippets based on the primary search term (for intersection cases)
+    const snippetTerm = parsed.text || parsed.person || parsed.tag;
+    if (snippetTerm && results.length > 0) {
+      results = this.indexer.regenerateSnippets(results, snippetTerm);
+    }
+
     return results.slice(0, limit);
   }
 

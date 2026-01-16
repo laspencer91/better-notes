@@ -549,6 +549,19 @@ export class Indexer {
     return notes.length;
   }
 
+  regenerateSnippets(results: SearchResult[], searchTerm: string): SearchResult[] {
+    return results.map((result) => {
+      const content = this.noteContents.get(result.id);
+      if (content) {
+        return {
+          ...result,
+          snippet: this.extractSnippet(content, searchTerm),
+        };
+      }
+      return result;
+    });
+  }
+
   getStats(): { noteCount: number; entityCount: number; lastIndexed: string | null } {
     const noteResult = this.db.exec("SELECT COUNT(*) as count FROM notes");
     const entityResult = this.db.exec("SELECT COUNT(*) as count FROM entities");
