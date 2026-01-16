@@ -5,6 +5,7 @@ import chalk from "chalk";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import { readFileSync } from "fs";
 import {
   loadConfig,
   configExists,
@@ -21,12 +22,17 @@ import { SearchEngine } from "./notes/search.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Read version from package.json
+const packageJson = JSON.parse(
+  readFileSync(join(__dirname, "..", "package.json"), "utf-8")
+);
+
 const program = new Command();
 
 program
   .name("better-notes")
   .description("A powerful notes management system with MCP integration")
-  .version("0.1.0");
+  .version(packageJson.version);
 
 // Init command
 program

@@ -6,6 +6,9 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import { loadConfig, configExists, ensureDirectories, Config } from "./config/index.js";
 import { NoteManager } from "./notes/manager.js";
 import { Indexer } from "./index/indexer.js";
@@ -24,6 +27,12 @@ import {
   SearchByTagSchema,
 } from "./tools/definitions.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const packageJson = JSON.parse(
+  readFileSync(join(__dirname, "..", "package.json"), "utf-8")
+);
+
 class BetterNotesServer {
   private server: Server;
   private config: Config;
@@ -40,7 +49,7 @@ class BetterNotesServer {
     this.server = new Server(
       {
         name: "better-notes",
-        version: "0.1.0",
+        version: packageJson.version,
       },
       {
         capabilities: {
