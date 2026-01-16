@@ -275,50 +275,63 @@ export class Indexer {
     this.save();
   }
 
-  private extractSnippet(content: string, query: string, snippetLength: number = 200): string {
+  private extractSnippet(content: string, query: string, snippetLength: number = 150, maxSnippets: number = 3): string {
     const lowerContent = content.toLowerCase();
     const lowerQuery = query.toLowerCase();
 
-    // Find the first occurrence of any query term
+    // Find all occurrences of query terms
     const terms = lowerQuery.split(/\s+/).filter(t => t.length > 2);
-    let bestPos = -1;
+    const positions: number[] = [];
 
     for (const term of terms) {
-      const pos = lowerContent.indexOf(term);
-      if (pos !== -1 && (bestPos === -1 || pos < bestPos)) {
-        bestPos = pos;
+      let pos = 0;
+      while ((pos = lowerContent.indexOf(term, pos)) !== -1) {
+        // Avoid overlapping snippets - only add if far enough from existing positions
+        const isFarEnough = positions.every(p => Math.abs(p - pos) > snippetLength);
+        if (isFarEnough) {
+          positions.push(pos);
+        }
+        pos += term.length;
       }
     }
 
-    if (bestPos === -1) {
+    // Sort positions and limit to maxSnippets
+    positions.sort((a, b) => a - b);
+    const selectedPositions = positions.slice(0, maxSnippets);
+
+    if (selectedPositions.length === 0) {
       // No match found, return start of content
       return content.slice(0, snippetLength) + (content.length > snippetLength ? "..." : "");
     }
 
-    // Calculate snippet boundaries around the match
-    const halfLength = Math.floor(snippetLength / 2);
-    let start = Math.max(0, bestPos - halfLength);
-    let end = Math.min(content.length, bestPos + halfLength);
+    // Extract snippets around each position
+    const snippets: string[] = [];
+    for (const pos of selectedPositions) {
+      const halfLength = Math.floor(snippetLength / 2);
+      let start = Math.max(0, pos - halfLength);
+      let end = Math.min(content.length, pos + halfLength);
 
-    // Adjust to not cut words
-    if (start > 0) {
-      const spacePos = content.indexOf(" ", start);
-      if (spacePos !== -1 && spacePos < bestPos) {
-        start = spacePos + 1;
+      // Adjust to not cut words
+      if (start > 0) {
+        const spacePos = content.indexOf(" ", start);
+        if (spacePos !== -1 && spacePos < pos) {
+          start = spacePos + 1;
+        }
       }
-    }
-    if (end < content.length) {
-      const spacePos = content.lastIndexOf(" ", end);
-      if (spacePos > bestPos) {
-        end = spacePos;
+      if (end < content.length) {
+        const spacePos = content.lastIndexOf(" ", end);
+        if (spacePos > pos) {
+          end = spacePos;
+        }
       }
+
+      let snippet = content.slice(start, end);
+      if (start > 0) snippet = "..." + snippet;
+      if (end < content.length) snippet = snippet + "...";
+      snippets.push(snippet);
     }
 
-    let snippet = content.slice(start, end);
-    if (start > 0) snippet = "..." + snippet;
-    if (end < content.length) snippet = snippet + "...";
-
-    return snippet;
+    return snippets.join("\n\n");
   }
 
   search(query: string, limit: number = 20): SearchResult[] {

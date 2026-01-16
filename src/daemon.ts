@@ -96,6 +96,30 @@ export async function startDaemon(): Promise<void> {
   const watcher = new FileWatcher(config, indexer);
   const gitSync = new GitSync(config);
 
+  // Track last sync time for sleep/wake recovery
+  let lastSyncTime = Date.now();
+  const SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  const CHECK_INTERVAL_MS = 60 * 1000; // Check every minute
+
+  const performSync = async () => {
+    try {
+      const count = await indexer.rebuildIndex(noteManager);
+      log(`Index rebuilt: ${count} notes indexed`);
+    } catch (error) {
+      log(`Index rebuild failed: ${(error as Error).message}`);
+    }
+
+    if (config.gitSync.enabled) {
+      try {
+        await gitSync.sync();
+      } catch (error) {
+        log(`Git sync failed: ${(error as Error).message}`);
+      }
+    }
+
+    lastSyncTime = Date.now();
+  };
+
   // Set up watcher events
   watcher.on("noteChanged", (note) => {
     log(`Note updated: ${note.id}`);
@@ -147,26 +171,23 @@ export async function startDaemon(): Promise<void> {
   }
 
   // Initial sync
-  if (config.gitSync.enabled) {
-    try {
-      await gitSync.sync();
-    } catch (error) {
-      log(`Initial sync failed: ${(error as Error).message}`);
-    }
-  }
+  await performSync();
 
-  // Rebuild index on startup
-  try {
-    const count = await indexer.rebuildIndex(noteManager);
-    log(`Index rebuilt: ${count} notes indexed`);
-  } catch (error) {
-    log(`Index rebuild failed: ${(error as Error).message}`);
-  }
+  // Periodic sync check - handles sleep/wake recovery
+  // If system was asleep and 5+ minutes passed, resync to catch any missed changes
+  const syncCheckInterval = setInterval(async () => {
+    const timeSinceLastSync = Date.now() - lastSyncTime;
+    if (timeSinceLastSync >= SYNC_INTERVAL_MS) {
+      log(`${Math.round(timeSinceLastSync / 1000 / 60)} minutes since last sync, resyncing...`);
+      await performSync();
+    }
+  }, CHECK_INTERVAL_MS);
 
   // Handle shutdown
   const shutdown = async () => {
     log("Shutting down daemon...");
 
+    clearInterval(syncCheckInterval);
     watcher.stop();
     gitSync.cancelPendingSync();
 
