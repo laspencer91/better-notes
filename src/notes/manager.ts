@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, basename } from "path";
 import matter from "gray-matter";
 import { Config, getNotesDirectory } from "../config/index.js";
 import {
@@ -53,8 +53,7 @@ export class NoteManager {
     const rawContent = readFileSync(filePath, "utf-8");
     const { data, content } = matter(rawContent);
 
-    const pathParts = filePath.split("/");
-    const filename = pathParts[pathParts.length - 1];
+    const filename = basename(filePath);
     const date = filename.replace(".md", "");
 
     const frontmatter: NoteFrontmatter = {

@@ -188,7 +188,9 @@ export async function startDaemon(): Promise<void> {
 
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
-  process.on("SIGHUP", shutdown);
+  if (process.platform !== "win32") {
+    process.on("SIGHUP", shutdown);
+  }
 
   log(`Daemon started (PID: ${process.pid})`);
 }
