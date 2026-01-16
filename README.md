@@ -5,7 +5,7 @@ A powerful notes management system with MCP (Model Context Protocol) integration
 ## Features
 
 - **MCP Integration**: Use Claude to create, search, and manage notes naturally
-- **Full-Text Search**: SQLite FTS5-powered search with ranking
+- **Full-Text Search**: SQLite-powered search across all notes
 - **Git Auto-Sync**: Automatic commits and pushes with smart debouncing
 - **Entity Extraction**: Automatically tracks @mentions for people
 - **Background Daemon**: File watching and syncing runs in the background
@@ -29,7 +29,17 @@ npm install -g @better-notes/cli
    better-notes daemon start
    ```
 
-3. **Configure your MCP client** (e.g., Claude Desktop):
+3. **Add to Claude Code** (one-liner):
+   ```bash
+   claude mcp add-json better-notes '{"command":"npx","args":["@better-notes/cli","serve"]}'
+   ```
+
+   Or if globally installed:
+   ```bash
+   claude mcp add-json better-notes '{"command":"better-notes","args":["serve"]}'
+   ```
+
+4. **Or configure Claude Desktop manually**:
    ```json
    {
      "mcpServers": {
