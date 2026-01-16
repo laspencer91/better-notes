@@ -94,8 +94,8 @@ daemonCmd
       console.log("Starting daemon in background...");
       startDaemonBackground();
 
-      // Wait a moment and check if it started
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // Wait for daemon to initialize (sql.js needs time to load)
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       const newStatus = getDaemonStatus();
       if (newStatus.running) {
         console.log(chalk.green(`Daemon started (PID: ${newStatus.pid})`));
@@ -129,9 +129,9 @@ daemonCmd
   .description("Restart the background daemon")
   .action(async () => {
     stopDaemon();
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     startDaemonBackground();
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 3000));
     const status = getDaemonStatus();
     if (status.running) {
       console.log(chalk.green(`Daemon restarted (PID: ${status.pid})`));

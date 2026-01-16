@@ -95,17 +95,6 @@ export class Indexer {
         indexed_at TEXT NOT NULL
       );
 
-      -- FTS5 virtual table for full-text search
-      CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-        id,
-        title,
-        content,
-        tags,
-        mentions,
-        content='notes',
-        content_rowid='rowid'
-      );
-
       -- Entities table for people, projects, etc.
       CREATE TABLE IF NOT EXISTS entities (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,9 +115,10 @@ export class Indexer {
         PRIMARY KEY (note_id, entity_id)
       );
 
-      -- Indexes
+      -- Indexes for faster searching
       CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
       CREATE INDEX IF NOT EXISTS idx_notes_category ON notes(category);
+      CREATE INDEX IF NOT EXISTS idx_notes_content ON notes(content);
       CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
       CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
     `);
@@ -143,7 +133,6 @@ export class Indexer {
 
   indexNote(note: Note): void {
     // Delete existing entry if any
-    this.db.run("DELETE FROM notes_fts WHERE id = ?", [note.id]);
     this.db.run("DELETE FROM notes WHERE id = ?", [note.id]);
 
     // Insert new entry
@@ -163,19 +152,6 @@ export class Indexer {
         note.frontmatter.created,
         note.frontmatter.updated,
         new Date().toISOString(),
-      ]
-    );
-
-    // Update FTS index
-    this.db.run(
-      `INSERT INTO notes_fts (id, title, content, tags, mentions)
-       VALUES (?, ?, ?, ?, ?)`,
-      [
-        note.id,
-        note.frontmatter.title,
-        note.content,
-        note.frontmatter.tags.join(","),
-        note.frontmatter.mentions.join(","),
       ]
     );
 
@@ -225,12 +201,12 @@ export class Indexer {
 
   removeNote(noteId: string): void {
     this.db.run("DELETE FROM note_entities WHERE note_id = ?", [noteId]);
-    this.db.run("DELETE FROM notes_fts WHERE id = ?", [noteId]);
     this.db.run("DELETE FROM notes WHERE id = ?", [noteId]);
     this.save();
   }
 
   search(query: string, limit: number = 20): SearchResult[] {
+    const searchPattern = `%${query.toLowerCase()}%`;
     const results = this.db.exec(
       `SELECT
         n.id,
@@ -240,14 +216,15 @@ export class Indexer {
         n.category,
         n.tags,
         n.mentions,
-        snippet(notes_fts, 2, '<mark>', '</mark>', '...', 32) as snippet,
-        rank
-      FROM notes_fts
-      JOIN notes n ON notes_fts.id = n.id
-      WHERE notes_fts MATCH ?
-      ORDER BY rank
+        substr(n.content, 1, 200) as snippet
+      FROM notes n
+      WHERE LOWER(n.title) LIKE ?
+         OR LOWER(n.content) LIKE ?
+         OR LOWER(n.tags) LIKE ?
+         OR LOWER(n.mentions) LIKE ?
+      ORDER BY n.date DESC
       LIMIT ?`,
-      [query, limit]
+      [searchPattern, searchPattern, searchPattern, searchPattern, limit]
     );
 
     if (results.length === 0) return [];
@@ -261,7 +238,7 @@ export class Indexer {
       tags: (row[5] as string)?.split(",").filter(Boolean) || [],
       mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
       snippet: row[7] as string,
-      rank: row[8] as number,
+      rank: 0,
     }));
   }
 
@@ -436,7 +413,6 @@ export class Indexer {
     // Clear existing data
     this.db.run("DELETE FROM note_entities");
     this.db.run("DELETE FROM entities");
-    this.db.run("DELETE FROM notes_fts");
     this.db.run("DELETE FROM notes");
 
     // Re-index all notes
