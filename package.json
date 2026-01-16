@@ -1,11 +1,11 @@
 {
   "name": "@better-notes/cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A powerful notes management system with MCP server integration, full-text search, and git sync",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "better-notes": "./dist/cli.js"
+    "better-notes": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
@@ -41,19 +41,19 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "better-sqlite3": "^11.0.0",
     "chalk": "^5.3.0",
     "chokidar": "^3.6.0",
     "commander": "^12.1.0",
     "gray-matter": "^4.0.3",
     "prompts": "^2.4.2",
     "simple-git": "^3.25.0",
+    "sql.js": "^1.11.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20.14.0",
     "@types/prompts": "^2.4.9",
+    "@types/sql.js": "^1.4.9",
     "typescript": "^5.5.0"
   },
   "engines": {

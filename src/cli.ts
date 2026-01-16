@@ -154,7 +154,7 @@ noteCmd
     const config = loadConfig();
     ensureDirectories(config);
     const noteManager = new NoteManager(config);
-    const indexer = new Indexer(config);
+    const indexer = await Indexer.create(config);
 
     const note = await noteManager.createNote({
       title: options.title,
@@ -235,7 +235,7 @@ program
     }
 
     const config = loadConfig();
-    const indexer = new Indexer(config);
+    const indexer = await Indexer.create(config);
     const searchEngine = new SearchEngine(indexer, config);
 
     const results = await searchEngine.search(query);
@@ -267,7 +267,7 @@ indexCmd
     }
 
     const config = loadConfig();
-    const indexer = new Indexer(config);
+    const indexer = await Indexer.create(config);
     const noteManager = new NoteManager(config);
 
     console.log("Rebuilding index...");
@@ -280,14 +280,14 @@ indexCmd
 indexCmd
   .command("stats")
   .description("Show index statistics")
-  .action(() => {
+  .action(async () => {
     if (!configExists()) {
       console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
       process.exit(1);
     }
 
     const config = loadConfig();
-    const indexer = new Indexer(config);
+    const indexer = await Indexer.create(config);
     const stats = indexer.getStats();
     indexer.close();
 
@@ -319,7 +319,7 @@ program
 // Install service command
 program
   .command("install-service")
-  .description("Install as a system service (systemd/launchd)")
+  .description("Install as a system service (systemd/launchd/Task Scheduler)")
   .action(async () => {
     const platform = process.platform;
 
@@ -373,8 +373,41 @@ WantedBy=multi-user.target
 `));
       console.log("3. Load the service:");
       console.log(chalk.dim("   launchctl load ~/Library/LaunchAgents/com.better-notes.daemon.plist"));
+    } else if (platform === "win32") {
+      console.log(chalk.bold("\nTo install as a Windows Task Scheduler task:\n"));
+      console.log("1. Open Task Scheduler:");
+      console.log(chalk.dim("   Press Win+R, type 'taskschd.msc', press Enter\n"));
+      console.log("2. Create a new task:");
+      console.log(chalk.dim("   Click 'Create Task...' in the right panel\n"));
+      console.log("3. General tab:");
+      console.log(chalk.dim("   - Name: Better Notes Daemon"));
+      console.log(chalk.dim("   - Check 'Run whether user is logged on or not'"));
+      console.log(chalk.dim("   - Check 'Run with highest privileges'\n"));
+      console.log("4. Triggers tab:");
+      console.log(chalk.dim("   - Click 'New...'"));
+      console.log(chalk.dim("   - Begin the task: 'At log on'"));
+      console.log(chalk.dim("   - Click OK\n"));
+      console.log("5. Actions tab:");
+      console.log(chalk.dim("   - Click 'New...'"));
+      console.log(chalk.dim("   - Action: 'Start a program'"));
+      console.log(chalk.dim(`   - Program/script: ${process.execPath}`));
+      console.log(chalk.dim(`   - Arguments: "${join(__dirname, "daemon.js")}" run`));
+      console.log(chalk.dim("   - Click OK\n"));
+      console.log("6. Conditions tab:");
+      console.log(chalk.dim("   - Uncheck 'Start only if on AC power' (for laptops)\n"));
+      console.log("7. Settings tab:");
+      console.log(chalk.dim("   - Check 'Allow task to be run on demand'"));
+      console.log(chalk.dim("   - Check 'If the task fails, restart every: 1 minute'"));
+      console.log(chalk.dim("   - Click OK\n"));
+      console.log(chalk.bold("Alternative - using PowerShell (run as Admin):"));
+      console.log(chalk.cyan(`
+$action = New-ScheduledTaskAction -Execute '${process.execPath}' -Argument '"${join(__dirname, "daemon.js")}" run'
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+$settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName "BetterNotesDaemon" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
+`));
     } else {
-      console.log(chalk.yellow("Service installation is only supported on Linux (systemd) and macOS (launchd)."));
+      console.log(chalk.yellow(`Service installation is not supported on ${platform}.`));
     }
   });
 

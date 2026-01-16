@@ -1,11 +1,10 @@
-import Database from "better-sqlite3";
-import { existsSync, mkdirSync, statSync } from "fs";
+import initSqlJs, { Database } from "sql.js";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import {
   Config,
   getDatabasePath,
   getIndexDirectory,
-  getNotesDirectory,
 } from "../config/index.js";
 import { NoteManager } from "../notes/manager.js";
 import { Note } from "../notes/types.js";
@@ -36,26 +35,51 @@ export interface SearchResult {
   rank: number;
 }
 
+let SQL: Awaited<ReturnType<typeof initSqlJs>> | null = null;
+
+async function getSqlJs() {
+  if (!SQL) {
+    SQL = await initSqlJs();
+  }
+  return SQL;
+}
+
 export class Indexer {
-  private db: Database.Database;
+  private db: Database;
   private config: Config;
+  private dbPath: string;
 
-  constructor(config: Config) {
+  private constructor(db: Database, config: Config, dbPath: string) {
+    this.db = db;
     this.config = config;
-    const dbPath = getDatabasePath(config);
+    this.dbPath = dbPath;
+  }
 
-    // Ensure directory exists
+  static async create(config: Config): Promise<Indexer> {
+    const dbPath = getDatabasePath(config);
     const indexDir = dirname(dbPath);
+
     if (!existsSync(indexDir)) {
       mkdirSync(indexDir, { recursive: true });
     }
 
-    this.db = new Database(dbPath);
-    this.initializeSchema();
+    const SQL = await getSqlJs();
+    let db: Database;
+
+    if (existsSync(dbPath)) {
+      const buffer = readFileSync(dbPath);
+      db = new SQL.Database(buffer);
+    } else {
+      db = new SQL.Database();
+    }
+
+    const indexer = new Indexer(db, config, dbPath);
+    indexer.initializeSchema();
+    return indexer;
   }
 
   private initializeSchema(): void {
-    this.db.exec(`
+    this.db.run(`
       -- Main notes table
       CREATE TABLE IF NOT EXISTS notes (
         id TEXT PRIMARY KEY,
@@ -81,24 +105,6 @@ export class Indexer {
         content='notes',
         content_rowid='rowid'
       );
-
-      -- Triggers to keep FTS in sync
-      CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
-        INSERT INTO notes_fts(rowid, id, title, content, tags, mentions)
-        VALUES (NEW.rowid, NEW.id, NEW.title, NEW.content, NEW.tags, NEW.mentions);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-        INSERT INTO notes_fts(notes_fts, rowid, id, title, content, tags, mentions)
-        VALUES ('delete', OLD.rowid, OLD.id, OLD.title, OLD.content, OLD.tags, OLD.mentions);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
-        INSERT INTO notes_fts(notes_fts, rowid, id, title, content, tags, mentions)
-        VALUES ('delete', OLD.rowid, OLD.id, OLD.title, OLD.content, OLD.tags, OLD.mentions);
-        INSERT INTO notes_fts(rowid, id, title, content, tags, mentions)
-        VALUES (NEW.rowid, NEW.id, NEW.title, NEW.content, NEW.tags, NEW.mentions);
-      END;
 
       -- Entities table for people, projects, etc.
       CREATE TABLE IF NOT EXISTS entities (
@@ -126,33 +132,59 @@ export class Indexer {
       CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
       CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
     `);
+    this.save();
+  }
+
+  private save(): void {
+    const data = this.db.export();
+    const buffer = Buffer.from(data);
+    writeFileSync(this.dbPath, buffer);
   }
 
   indexNote(note: Note): void {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO notes
-      (id, file_path, date, title, category, tags, mentions, content, created_at, updated_at, indexed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    // Delete existing entry if any
+    this.db.run("DELETE FROM notes_fts WHERE id = ?", [note.id]);
+    this.db.run("DELETE FROM notes WHERE id = ?", [note.id]);
 
-    stmt.run(
-      note.id,
-      note.filePath,
-      note.date,
-      note.frontmatter.title,
-      note.frontmatter.category,
-      note.frontmatter.tags.join(","),
-      note.frontmatter.mentions.join(","),
-      note.content,
-      note.frontmatter.created,
-      note.frontmatter.updated,
-      new Date().toISOString()
+    // Insert new entry
+    this.db.run(
+      `INSERT INTO notes
+       (id, file_path, date, title, category, tags, mentions, content, created_at, updated_at, indexed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        note.id,
+        note.filePath,
+        note.date,
+        note.frontmatter.title,
+        note.frontmatter.category,
+        note.frontmatter.tags.join(","),
+        note.frontmatter.mentions.join(","),
+        note.content,
+        note.frontmatter.created,
+        note.frontmatter.updated,
+        new Date().toISOString(),
+      ]
+    );
+
+    // Update FTS index
+    this.db.run(
+      `INSERT INTO notes_fts (id, title, content, tags, mentions)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        note.id,
+        note.frontmatter.title,
+        note.content,
+        note.frontmatter.tags.join(","),
+        note.frontmatter.mentions.join(","),
+      ]
     );
 
     // Index entities (mentions)
     if (this.config.search.enableEntityExtraction) {
       this.indexEntities(note);
     }
+
+    this.save();
   }
 
   private indexEntities(note: Note): void {
@@ -160,45 +192,47 @@ export class Indexer {
     const now = new Date().toISOString();
 
     for (const mention of mentions) {
-      // Upsert entity
-      this.db
-        .prepare(
-          `
-        INSERT INTO entities (name, type, first_seen, last_seen, mention_count)
-        VALUES (?, 'person', ?, ?, 1)
-        ON CONFLICT(name, type) DO UPDATE SET
-          last_seen = ?,
-          mention_count = mention_count + 1
-      `
-        )
-        .run(mention, now, now, now);
+      // Check if entity exists
+      const existing = this.db.exec(
+        "SELECT id FROM entities WHERE name = ? AND type = 'person'",
+        [mention.toLowerCase()]
+      );
 
-      // Get entity ID
-      const entity = this.db
-        .prepare("SELECT id FROM entities WHERE name = ? AND type = 'person'")
-        .get(mention) as { id: number } | undefined;
+      let entityId: number;
 
-      if (entity) {
-        this.db
-          .prepare(
-            `
-          INSERT OR IGNORE INTO note_entities (note_id, entity_id)
-          VALUES (?, ?)
-        `
-          )
-          .run(note.id, entity.id);
+      if (existing.length > 0 && existing[0].values.length > 0) {
+        entityId = existing[0].values[0][0] as number;
+        this.db.run(
+          "UPDATE entities SET last_seen = ?, mention_count = mention_count + 1 WHERE id = ?",
+          [now, entityId]
+        );
+      } else {
+        this.db.run(
+          "INSERT INTO entities (name, type, first_seen, last_seen, mention_count) VALUES (?, 'person', ?, ?, 1)",
+          [mention.toLowerCase(), now, now]
+        );
+        const result = this.db.exec("SELECT last_insert_rowid()");
+        entityId = result[0].values[0][0] as number;
       }
+
+      // Link note to entity
+      this.db.run(
+        "INSERT OR IGNORE INTO note_entities (note_id, entity_id) VALUES (?, ?)",
+        [note.id, entityId]
+      );
     }
   }
 
   removeNote(noteId: string): void {
-    this.db.prepare("DELETE FROM note_entities WHERE note_id = ?").run(noteId);
-    this.db.prepare("DELETE FROM notes WHERE id = ?").run(noteId);
+    this.db.run("DELETE FROM note_entities WHERE note_id = ?", [noteId]);
+    this.db.run("DELETE FROM notes_fts WHERE id = ?", [noteId]);
+    this.db.run("DELETE FROM notes WHERE id = ?", [noteId]);
+    this.save();
   }
 
   search(query: string, limit: number = 20): SearchResult[] {
-    const stmt = this.db.prepare(`
-      SELECT
+    const results = this.db.exec(
+      `SELECT
         n.id,
         n.file_path as filePath,
         n.date,
@@ -212,31 +246,28 @@ export class Indexer {
       JOIN notes n ON notes_fts.id = n.id
       WHERE notes_fts MATCH ?
       ORDER BY rank
-      LIMIT ?
-    `);
+      LIMIT ?`,
+      [query, limit]
+    );
 
-    const results = stmt.all(query, limit) as Array<{
-      id: string;
-      filePath: string;
-      date: string;
-      title: string;
-      category: string;
-      tags: string;
-      mentions: string;
-      snippet: string;
-      rank: number;
-    }>;
+    if (results.length === 0) return [];
 
-    return results.map((r) => ({
-      ...r,
-      tags: r.tags ? r.tags.split(",").filter(Boolean) : [],
-      mentions: r.mentions ? r.mentions.split(",").filter(Boolean) : [],
+    return results[0].values.map((row) => ({
+      id: row[0] as string,
+      filePath: row[1] as string,
+      date: row[2] as string,
+      title: row[3] as string,
+      category: row[4] as string,
+      tags: (row[5] as string)?.split(",").filter(Boolean) || [],
+      mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
+      snippet: row[7] as string,
+      rank: row[8] as number,
     }));
   }
 
   searchByPerson(name: string, limit: number = 20): SearchResult[] {
-    const stmt = this.db.prepare(`
-      SELECT
+    const results = this.db.exec(
+      `SELECT
         n.id,
         n.file_path as filePath,
         n.date,
@@ -249,26 +280,22 @@ export class Indexer {
       FROM notes n
       WHERE n.mentions LIKE ?
       ORDER BY n.date DESC
-      LIMIT ?
-    `);
+      LIMIT ?`,
+      [`%${name.toLowerCase()}%`, limit]
+    );
 
-    // Normalize to lowercase for case-insensitive matching
-    const results = stmt.all(`%${name.toLowerCase()}%`, limit) as Array<{
-      id: string;
-      filePath: string;
-      date: string;
-      title: string;
-      category: string;
-      tags: string;
-      mentions: string;
-      snippet: string;
-      rank: number;
-    }>;
+    if (results.length === 0) return [];
 
-    return results.map((r) => ({
-      ...r,
-      tags: r.tags ? r.tags.split(",").filter(Boolean) : [],
-      mentions: r.mentions ? r.mentions.split(",").filter(Boolean) : [],
+    return results[0].values.map((row) => ({
+      id: row[0] as string,
+      filePath: row[1] as string,
+      date: row[2] as string,
+      title: row[3] as string,
+      category: row[4] as string,
+      tags: (row[5] as string)?.split(",").filter(Boolean) || [],
+      mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
+      snippet: row[7] as string,
+      rank: row[8] as number,
     }));
   }
 
@@ -277,8 +304,8 @@ export class Indexer {
     endDate: string,
     limit: number = 100
   ): SearchResult[] {
-    const stmt = this.db.prepare(`
-      SELECT
+    const results = this.db.exec(
+      `SELECT
         n.id,
         n.file_path as filePath,
         n.date,
@@ -291,31 +318,28 @@ export class Indexer {
       FROM notes n
       WHERE n.date >= ? AND n.date <= ?
       ORDER BY n.date DESC
-      LIMIT ?
-    `);
+      LIMIT ?`,
+      [startDate, endDate, limit]
+    );
 
-    const results = stmt.all(startDate, endDate, limit) as Array<{
-      id: string;
-      filePath: string;
-      date: string;
-      title: string;
-      category: string;
-      tags: string;
-      mentions: string;
-      snippet: string;
-      rank: number;
-    }>;
+    if (results.length === 0) return [];
 
-    return results.map((r) => ({
-      ...r,
-      tags: r.tags ? r.tags.split(",").filter(Boolean) : [],
-      mentions: r.mentions ? r.mentions.split(",").filter(Boolean) : [],
+    return results[0].values.map((row) => ({
+      id: row[0] as string,
+      filePath: row[1] as string,
+      date: row[2] as string,
+      title: row[3] as string,
+      category: row[4] as string,
+      tags: (row[5] as string)?.split(",").filter(Boolean) || [],
+      mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
+      snippet: row[7] as string,
+      rank: row[8] as number,
     }));
   }
 
   searchByCategory(category: string, limit: number = 50): SearchResult[] {
-    const stmt = this.db.prepare(`
-      SELECT
+    const results = this.db.exec(
+      `SELECT
         n.id,
         n.file_path as filePath,
         n.date,
@@ -328,31 +352,28 @@ export class Indexer {
       FROM notes n
       WHERE n.category = ?
       ORDER BY n.date DESC
-      LIMIT ?
-    `);
+      LIMIT ?`,
+      [category, limit]
+    );
 
-    const results = stmt.all(category, limit) as Array<{
-      id: string;
-      filePath: string;
-      date: string;
-      title: string;
-      category: string;
-      tags: string;
-      mentions: string;
-      snippet: string;
-      rank: number;
-    }>;
+    if (results.length === 0) return [];
 
-    return results.map((r) => ({
-      ...r,
-      tags: r.tags ? r.tags.split(",").filter(Boolean) : [],
-      mentions: r.mentions ? r.mentions.split(",").filter(Boolean) : [],
+    return results[0].values.map((row) => ({
+      id: row[0] as string,
+      filePath: row[1] as string,
+      date: row[2] as string,
+      title: row[3] as string,
+      category: row[4] as string,
+      tags: (row[5] as string)?.split(",").filter(Boolean) || [],
+      mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
+      snippet: row[7] as string,
+      rank: row[8] as number,
     }));
   }
 
   searchByTag(tag: string, limit: number = 50): SearchResult[] {
-    const stmt = this.db.prepare(`
-      SELECT
+    const results = this.db.exec(
+      `SELECT
         n.id,
         n.file_path as filePath,
         n.date,
@@ -365,53 +386,58 @@ export class Indexer {
       FROM notes n
       WHERE n.tags LIKE ?
       ORDER BY n.date DESC
-      LIMIT ?
-    `);
+      LIMIT ?`,
+      [`%${tag}%`, limit]
+    );
 
-    const results = stmt.all(`%${tag}%`, limit) as Array<{
-      id: string;
-      filePath: string;
-      date: string;
-      title: string;
-      category: string;
-      tags: string;
-      mentions: string;
-      snippet: string;
-      rank: number;
-    }>;
+    if (results.length === 0) return [];
 
-    return results.map((r) => ({
-      ...r,
-      tags: r.tags ? r.tags.split(",").filter(Boolean) : [],
-      mentions: r.mentions ? r.mentions.split(",").filter(Boolean) : [],
+    return results[0].values.map((row) => ({
+      id: row[0] as string,
+      filePath: row[1] as string,
+      date: row[2] as string,
+      title: row[3] as string,
+      category: row[4] as string,
+      tags: (row[5] as string)?.split(",").filter(Boolean) || [],
+      mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
+      snippet: row[7] as string,
+      rank: row[8] as number,
     }));
   }
 
   getEntities(type?: string): Array<{ name: string; type: string; count: number }> {
-    let stmt;
+    let results;
     if (type) {
-      stmt = this.db.prepare(`
-        SELECT name, type, mention_count as count
-        FROM entities
-        WHERE type = ?
-        ORDER BY mention_count DESC
-      `);
-      return stmt.all(type) as Array<{ name: string; type: string; count: number }>;
+      results = this.db.exec(
+        `SELECT name, type, mention_count as count
+         FROM entities
+         WHERE type = ?
+         ORDER BY mention_count DESC`,
+        [type]
+      );
     } else {
-      stmt = this.db.prepare(`
-        SELECT name, type, mention_count as count
-        FROM entities
-        ORDER BY mention_count DESC
-      `);
-      return stmt.all() as Array<{ name: string; type: string; count: number }>;
+      results = this.db.exec(
+        `SELECT name, type, mention_count as count
+         FROM entities
+         ORDER BY mention_count DESC`
+      );
     }
+
+    if (results.length === 0) return [];
+
+    return results[0].values.map((row) => ({
+      name: row[0] as string,
+      type: row[1] as string,
+      count: row[2] as number,
+    }));
   }
 
   async rebuildIndex(noteManager: NoteManager): Promise<number> {
     // Clear existing data
-    this.db.exec("DELETE FROM note_entities");
-    this.db.exec("DELETE FROM entities");
-    this.db.exec("DELETE FROM notes");
+    this.db.run("DELETE FROM note_entities");
+    this.db.run("DELETE FROM entities");
+    this.db.run("DELETE FROM notes_fts");
+    this.db.run("DELETE FROM notes");
 
     // Re-index all notes
     const notes = await noteManager.getAllNotes();
@@ -419,35 +445,28 @@ export class Indexer {
       this.indexNote(note);
     }
 
+    this.save();
     return notes.length;
   }
 
   getStats(): { noteCount: number; entityCount: number; lastIndexed: string | null } {
-    const noteCount = (
-      this.db.prepare("SELECT COUNT(*) as count FROM notes").get() as { count: number }
-    ).count;
-    const entityCount = (
-      this.db.prepare("SELECT COUNT(*) as count FROM entities").get() as { count: number }
-    ).count;
-    const lastIndexed = (
-      this.db
-        .prepare("SELECT MAX(indexed_at) as last FROM notes")
-        .get() as { last: string | null }
-    ).last;
+    const noteResult = this.db.exec("SELECT COUNT(*) as count FROM notes");
+    const entityResult = this.db.exec("SELECT COUNT(*) as count FROM entities");
+    const lastResult = this.db.exec("SELECT MAX(indexed_at) as last FROM notes");
+
+    const noteCount = noteResult.length > 0 ? (noteResult[0].values[0][0] as number) : 0;
+    const entityCount = entityResult.length > 0 ? (entityResult[0].values[0][0] as number) : 0;
+    const lastIndexed = lastResult.length > 0 ? (lastResult[0].values[0][0] as string | null) : null;
 
     return { noteCount, entityCount, lastIndexed };
   }
 
   close(): void {
+    this.save();
     this.db.close();
   }
 }
 
 export async function initializeDatabase(config: Config): Promise<Indexer> {
-  const indexDir = getIndexDirectory(config);
-  if (!existsSync(indexDir)) {
-    mkdirSync(indexDir, { recursive: true });
-  }
-
-  return new Indexer(config);
+  return Indexer.create(config);
 }

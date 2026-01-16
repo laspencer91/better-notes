@@ -31,20 +31,11 @@ class BetterNotesServer {
   private indexer: Indexer;
   private searchEngine: SearchEngine;
 
-  constructor() {
-    if (!configExists()) {
-      console.error(
-        "No configuration found. Run 'better-notes init' first."
-      );
-      process.exit(1);
-    }
-
-    this.config = loadConfig();
-    ensureDirectories(this.config);
-
-    this.noteManager = new NoteManager(this.config);
-    this.indexer = new Indexer(this.config);
-    this.searchEngine = new SearchEngine(this.indexer, this.config);
+  private constructor(config: Config, noteManager: NoteManager, indexer: Indexer, searchEngine: SearchEngine) {
+    this.config = config;
+    this.noteManager = noteManager;
+    this.indexer = indexer;
+    this.searchEngine = searchEngine;
 
     this.server = new Server(
       {
@@ -59,6 +50,24 @@ class BetterNotesServer {
     );
 
     this.setupHandlers();
+  }
+
+  static async create(): Promise<BetterNotesServer> {
+    if (!configExists()) {
+      console.error(
+        "No configuration found. Run 'better-notes init' first."
+      );
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    ensureDirectories(config);
+
+    const noteManager = new NoteManager(config);
+    const indexer = await Indexer.create(config);
+    const searchEngine = new SearchEngine(indexer, config);
+
+    return new BetterNotesServer(config, noteManager, indexer, searchEngine);
   }
 
   private setupHandlers(): void {
@@ -558,5 +567,6 @@ class BetterNotesServer {
   }
 }
 
-const server = new BetterNotesServer();
-server.run().catch(console.error);
+BetterNotesServer.create()
+  .then((server) => server.run())
+  .catch(console.error);

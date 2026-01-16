@@ -91,7 +91,7 @@ export async function startDaemon(): Promise<void> {
   writePidFile(pidPath);
 
   // Initialize components
-  const indexer = new Indexer(config);
+  const indexer = await Indexer.create(config);
   const noteManager = new NoteManager(config);
   const watcher = new FileWatcher(config, indexer);
   const gitSync = new GitSync(config);
