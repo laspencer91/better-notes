@@ -140,6 +140,13 @@ daemonCmd
     }
   });
 
+// Hidden run command - used by startDaemonBackground() to spawn the daemon process
+daemonCmd
+  .command("run", { hidden: true })
+  .action(async () => {
+    await startDaemon();
+  });
+
 // Note commands
 const noteCmd = program.command("note").description("Manage notes");
 

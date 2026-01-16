@@ -31,13 +31,15 @@ npm install -g @better-notes/cli
 
 3. **Add to Claude Code** (one-liner):
    ```bash
-   claude mcp add-json better-notes '{"command":"npx","args":["@better-notes/cli","serve"]}'
+   claude mcp add-json better-notes '{"command":"npx","args":["@better-notes/cli","serve"]}' --scope user
    ```
 
    Or if globally installed:
    ```bash
-   claude mcp add-json better-notes '{"command":"better-notes","args":["serve"]}'
+   claude mcp add-json better-notes '{"command":"better-notes","args":["serve"]}' --scope user
    ```
+
+   > Note: The `--scope user` flag makes the MCP server available globally across all projects. Omit it for project-local configuration.
 
 4. **Or configure Claude Desktop manually**:
    ```json
