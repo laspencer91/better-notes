@@ -1,4 +1,5 @@
 import initSqlJs, { Database } from "sql.js";
+import MiniSearch from "minisearch";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import {
@@ -44,15 +45,37 @@ async function getSqlJs() {
   return SQL;
 }
 
+interface MiniSearchDoc {
+  id: string;
+  title: string;
+  content: string;
+  tags: string;
+  mentions: string;
+  date: string;
+  category: string;
+  filePath: string;
+}
+
 export class Indexer {
   private db: Database;
   private config: Config;
   private dbPath: string;
+  private miniSearch: MiniSearch<MiniSearchDoc>;
+  private noteContents: Map<string, string> = new Map(); // Store content for snippet generation
 
   private constructor(db: Database, config: Config, dbPath: string) {
     this.db = db;
     this.config = config;
     this.dbPath = dbPath;
+    this.miniSearch = new MiniSearch<MiniSearchDoc>({
+      fields: ["title", "content", "tags", "mentions"],
+      storeFields: ["title", "date", "category", "filePath", "tags", "mentions"],
+      searchOptions: {
+        boost: { title: 2, mentions: 1.5 },
+        fuzzy: 0.2,
+        prefix: true,
+      },
+    });
   }
 
   static async create(config: Config): Promise<Indexer> {
@@ -75,7 +98,31 @@ export class Indexer {
 
     const indexer = new Indexer(db, config, dbPath);
     indexer.initializeSchema();
+    indexer.loadMiniSearchFromDb();
     return indexer;
+  }
+
+  private loadMiniSearchFromDb(): void {
+    const results = this.db.exec(
+      `SELECT id, title, content, tags, mentions, date, category, file_path FROM notes`
+    );
+
+    if (results.length === 0) return;
+
+    for (const row of results[0].values) {
+      const doc: MiniSearchDoc = {
+        id: row[0] as string,
+        title: row[1] as string,
+        content: row[2] as string,
+        tags: (row[3] as string || "").replace(/,/g, " "),
+        mentions: (row[4] as string || "").replace(/,/g, " "),
+        date: row[5] as string,
+        category: row[6] as string,
+        filePath: row[7] as string,
+      };
+      this.miniSearch.add(doc);
+      this.noteContents.set(doc.id, doc.content);
+    }
   }
 
   private initializeSchema(): void {
@@ -155,6 +202,22 @@ export class Indexer {
       ]
     );
 
+    // Update MiniSearch index
+    if (this.miniSearch.has(note.id)) {
+      this.miniSearch.discard(note.id);
+    }
+    this.miniSearch.add({
+      id: note.id,
+      title: note.frontmatter.title,
+      content: note.content,
+      tags: note.frontmatter.tags.join(" "),
+      mentions: note.frontmatter.mentions.join(" "),
+      date: note.date,
+      category: note.frontmatter.category,
+      filePath: note.filePath,
+    });
+    this.noteContents.set(note.id, note.content);
+
     // Index entities (mentions)
     if (this.config.search.enableEntityExtraction) {
       this.indexEntities(note);
@@ -202,44 +265,79 @@ export class Indexer {
   removeNote(noteId: string): void {
     this.db.run("DELETE FROM note_entities WHERE note_id = ?", [noteId]);
     this.db.run("DELETE FROM notes WHERE id = ?", [noteId]);
+
+    // Remove from MiniSearch
+    if (this.miniSearch.has(noteId)) {
+      this.miniSearch.discard(noteId);
+    }
+    this.noteContents.delete(noteId);
+
     this.save();
   }
 
+  private extractSnippet(content: string, query: string, snippetLength: number = 200): string {
+    const lowerContent = content.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+
+    // Find the first occurrence of any query term
+    const terms = lowerQuery.split(/\s+/).filter(t => t.length > 2);
+    let bestPos = -1;
+
+    for (const term of terms) {
+      const pos = lowerContent.indexOf(term);
+      if (pos !== -1 && (bestPos === -1 || pos < bestPos)) {
+        bestPos = pos;
+      }
+    }
+
+    if (bestPos === -1) {
+      // No match found, return start of content
+      return content.slice(0, snippetLength) + (content.length > snippetLength ? "..." : "");
+    }
+
+    // Calculate snippet boundaries around the match
+    const halfLength = Math.floor(snippetLength / 2);
+    let start = Math.max(0, bestPos - halfLength);
+    let end = Math.min(content.length, bestPos + halfLength);
+
+    // Adjust to not cut words
+    if (start > 0) {
+      const spacePos = content.indexOf(" ", start);
+      if (spacePos !== -1 && spacePos < bestPos) {
+        start = spacePos + 1;
+      }
+    }
+    if (end < content.length) {
+      const spacePos = content.lastIndexOf(" ", end);
+      if (spacePos > bestPos) {
+        end = spacePos;
+      }
+    }
+
+    let snippet = content.slice(start, end);
+    if (start > 0) snippet = "..." + snippet;
+    if (end < content.length) snippet = snippet + "...";
+
+    return snippet;
+  }
+
   search(query: string, limit: number = 20): SearchResult[] {
-    const searchPattern = `%${query.toLowerCase()}%`;
-    const results = this.db.exec(
-      `SELECT
-        n.id,
-        n.file_path as filePath,
-        n.date,
-        n.title,
-        n.category,
-        n.tags,
-        n.mentions,
-        substr(n.content, 1, 200) as snippet
-      FROM notes n
-      WHERE LOWER(n.title) LIKE ?
-         OR LOWER(n.content) LIKE ?
-         OR LOWER(n.tags) LIKE ?
-         OR LOWER(n.mentions) LIKE ?
-      ORDER BY n.date DESC
-      LIMIT ?`,
-      [searchPattern, searchPattern, searchPattern, searchPattern, limit]
-    );
+    const results = this.miniSearch.search(query).slice(0, limit);
 
-    if (results.length === 0) return [];
-
-    return results[0].values.map((row) => ({
-      id: row[0] as string,
-      filePath: row[1] as string,
-      date: row[2] as string,
-      title: row[3] as string,
-      category: row[4] as string,
-      tags: (row[5] as string)?.split(",").filter(Boolean) || [],
-      mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
-      snippet: row[7] as string,
-      rank: 0,
-    }));
+    return results.map((result) => {
+      const content = this.noteContents.get(result.id) || "";
+      return {
+        id: result.id,
+        filePath: result.filePath as string,
+        date: result.date as string,
+        title: result.title as string,
+        category: result.category as string,
+        tags: ((result.tags as string) || "").split(" ").filter(Boolean),
+        mentions: ((result.mentions as string) || "").split(" ").filter(Boolean),
+        snippet: this.extractSnippet(content, query),
+        rank: result.score,
+      };
+    });
   }
 
   searchByPerson(name: string, limit: number = 20): SearchResult[] {
@@ -252,8 +350,7 @@ export class Indexer {
         n.category,
         n.tags,
         n.mentions,
-        substr(n.content, 1, 200) as snippet,
-        0 as rank
+        n.content
       FROM notes n
       WHERE n.mentions LIKE ?
       ORDER BY n.date DESC
@@ -263,17 +360,20 @@ export class Indexer {
 
     if (results.length === 0) return [];
 
-    return results[0].values.map((row) => ({
-      id: row[0] as string,
-      filePath: row[1] as string,
-      date: row[2] as string,
-      title: row[3] as string,
-      category: row[4] as string,
-      tags: (row[5] as string)?.split(",").filter(Boolean) || [],
-      mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
-      snippet: row[7] as string,
-      rank: row[8] as number,
-    }));
+    return results[0].values.map((row) => {
+      const content = row[7] as string;
+      return {
+        id: row[0] as string,
+        filePath: row[1] as string,
+        date: row[2] as string,
+        title: row[3] as string,
+        category: row[4] as string,
+        tags: (row[5] as string)?.split(",").filter(Boolean) || [],
+        mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
+        snippet: this.extractSnippet(content, name),
+        rank: 0,
+      };
+    });
   }
 
   searchByDateRange(
@@ -290,8 +390,7 @@ export class Indexer {
         n.category,
         n.tags,
         n.mentions,
-        substr(n.content, 1, 200) as snippet,
-        0 as rank
+        substr(n.content, 1, 200) as snippet
       FROM notes n
       WHERE n.date >= ? AND n.date <= ?
       ORDER BY n.date DESC
@@ -310,7 +409,7 @@ export class Indexer {
       tags: (row[5] as string)?.split(",").filter(Boolean) || [],
       mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
       snippet: row[7] as string,
-      rank: row[8] as number,
+      rank: 0,
     }));
   }
 
@@ -324,8 +423,7 @@ export class Indexer {
         n.category,
         n.tags,
         n.mentions,
-        substr(n.content, 1, 200) as snippet,
-        0 as rank
+        substr(n.content, 1, 200) as snippet
       FROM notes n
       WHERE n.category = ?
       ORDER BY n.date DESC
@@ -344,7 +442,7 @@ export class Indexer {
       tags: (row[5] as string)?.split(",").filter(Boolean) || [],
       mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
       snippet: row[7] as string,
-      rank: row[8] as number,
+      rank: 0,
     }));
   }
 
@@ -358,8 +456,7 @@ export class Indexer {
         n.category,
         n.tags,
         n.mentions,
-        substr(n.content, 1, 200) as snippet,
-        0 as rank
+        n.content
       FROM notes n
       WHERE n.tags LIKE ?
       ORDER BY n.date DESC
@@ -369,17 +466,20 @@ export class Indexer {
 
     if (results.length === 0) return [];
 
-    return results[0].values.map((row) => ({
-      id: row[0] as string,
-      filePath: row[1] as string,
-      date: row[2] as string,
-      title: row[3] as string,
-      category: row[4] as string,
-      tags: (row[5] as string)?.split(",").filter(Boolean) || [],
-      mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
-      snippet: row[7] as string,
-      rank: row[8] as number,
-    }));
+    return results[0].values.map((row) => {
+      const content = row[7] as string;
+      return {
+        id: row[0] as string,
+        filePath: row[1] as string,
+        date: row[2] as string,
+        title: row[3] as string,
+        category: row[4] as string,
+        tags: (row[5] as string)?.split(",").filter(Boolean) || [],
+        mentions: (row[6] as string)?.split(",").filter(Boolean) || [],
+        snippet: this.extractSnippet(content, tag),
+        rank: 0,
+      };
+    });
   }
 
   getEntities(type?: string): Array<{ name: string; type: string; count: number }> {
@@ -414,6 +514,10 @@ export class Indexer {
     this.db.run("DELETE FROM note_entities");
     this.db.run("DELETE FROM entities");
     this.db.run("DELETE FROM notes");
+
+    // Clear MiniSearch
+    this.miniSearch.removeAll();
+    this.noteContents.clear();
 
     // Re-index all notes
     const notes = await noteManager.getAllNotes();

@@ -1,6 +1,6 @@
 {
   "name": "@better-notes/cli",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "A powerful notes management system with MCP server integration, full-text search, and git sync",
   "type": "module",
   "main": "dist/index.js",
@@ -45,6 +45,7 @@
     "chokidar": "^3.6.0",
     "commander": "^12.1.0",
     "gray-matter": "^4.0.3",
+    "minisearch": "^7.2.0",
     "prompts": "^2.4.2",
     "simple-git": "^3.25.0",
     "sql.js": "^1.11.0",
