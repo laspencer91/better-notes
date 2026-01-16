@@ -326,7 +326,7 @@ class BetterNotesServer {
             const formatted = results
               .map(
                 (r) =>
-                  `**${r.date}** - ${r.title}\n${r.snippet}\nTags: ${r.tags.join(", ") || "none"} | Mentions: ${r.mentions.join(", ") || "none"}`
+                  `**${r.date}** - ${r.title}\nFile: ${r.filePath}\n${r.snippet}\nTags: ${r.tags.join(", ") || "none"} | Mentions: ${r.mentions.join(", ") || "none"}`
               )
               .join("\n\n---\n\n");
             return {
@@ -349,7 +349,7 @@ class BetterNotesServer {
               };
             }
             const formatted = results
-              .map((r) => `**${r.date}** - ${r.title}\n${r.snippet}`)
+              .map((r) => `**${r.date}** - ${r.title}\nFile: ${r.filePath}\n${r.snippet}`)
               .join("\n\n---\n\n");
             return {
               content: [
@@ -372,7 +372,7 @@ class BetterNotesServer {
               };
             }
             const formatted = results
-              .map((r) => `**${r.date}** - ${r.title}\n${r.snippet}`)
+              .map((r) => `**${r.date}** - ${r.title}\nFile: ${r.filePath}\n${r.snippet}`)
               .join("\n\n---\n\n");
             return {
               content: [
@@ -423,7 +423,7 @@ class BetterNotesServer {
             const formatted = notes
               .map(
                 (n) =>
-                  `**${n.date}** - ${n.frontmatter.title}\nCategory: ${n.frontmatter.category} | Tags: ${n.frontmatter.tags.join(", ") || "none"}`
+                  `**${n.date}** - ${n.frontmatter.title}\nFile: ${n.filePath}\nCategory: ${n.frontmatter.category} | Tags: ${n.frontmatter.tags.join(", ") || "none"}`
               )
               .join("\n\n");
             return {

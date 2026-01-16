@@ -275,79 +275,70 @@ export class Indexer {
     this.save();
   }
 
-  private extractSnippet(content: string, query: string, maxSnippets: number = 5): string {
-    const lowerContent = content.toLowerCase();
+  private extractSnippet(content: string, query: string, contextLines: number = 4): string {
+    const lines = content.split("\n");
     const lowerQuery = query.toLowerCase();
-
-    // Find all occurrences of query terms
     const terms = lowerQuery.split(/\s+/).filter(t => t.length > 2);
-    const positions: number[] = [];
 
-    for (const term of terms) {
-      let pos = 0;
-      while ((pos = lowerContent.indexOf(term, pos)) !== -1) {
-        // Avoid overlapping snippets - only add if far enough from existing positions
-        const isFarEnough = positions.every(p => Math.abs(p - pos) > 60);
-        if (isFarEnough) {
-          positions.push(pos);
+    // Find all line numbers that contain any search term
+    const matchingLineNumbers: Set<number> = new Set();
+    for (let i = 0; i < lines.length; i++) {
+      const lowerLine = lines[i].toLowerCase();
+      for (const term of terms) {
+        if (lowerLine.includes(term)) {
+          matchingLineNumbers.add(i);
+          break;
         }
-        pos += term.length;
       }
     }
 
-    // Sort positions and limit to maxSnippets
-    positions.sort((a, b) => a - b);
-    const selectedPositions = positions.slice(0, maxSnippets);
-
-    if (selectedPositions.length === 0) {
-      // No match found, return start of content
-      return content.slice(0, 300) + (content.length > 300 ? "..." : "");
+    if (matchingLineNumbers.size === 0) {
+      // No match found, return first few lines
+      const preview = lines.slice(0, 5).join("\n");
+      return `[1-5]\n${preview}${lines.length > 5 ? "\n..." : ""}`;
     }
 
-    // Extract snippets around each position - show more AFTER the match
-    const snippets: string[] = [];
-    for (const pos of selectedPositions) {
-      // Find a good start point - look for line start or heading
-      let start = Math.max(0, pos - 50);
-      // Try to start at a newline
-      const lineStart = content.lastIndexOf("\n", pos);
-      if (lineStart !== -1 && lineStart >= pos - 100) {
-        start = lineStart + 1;
-      }
+    // For each matching line, create a range [matchLine, matchLine + contextLines]
+    const ranges: Array<[number, number]> = [];
+    for (const lineNum of matchingLineNumbers) {
+      ranges.push([lineNum, Math.min(lineNum + contextLines, lines.length - 1)]);
+    }
 
-      // Show more content after the match (up to 300 chars after)
-      let end = Math.min(content.length, pos + 300);
+    // Sort ranges by start line
+    ranges.sort((a, b) => a[0] - b[0]);
 
-      // Try to end at a natural boundary (double newline, or single newline before a heading/number)
-      const doubleNewline = content.indexOf("\n\n", pos + 50);
-      if (doubleNewline !== -1 && doubleNewline < end) {
-        end = doubleNewline;
+    // Merge overlapping ranges
+    const mergedRanges: Array<[number, number]> = [];
+    for (const range of ranges) {
+      if (mergedRanges.length === 0) {
+        mergedRanges.push(range);
       } else {
-        // Try to find a line break followed by a new section
-        const lines = content.slice(pos, end).split("\n");
-        let charCount = 0;
-        let goodEnd = -1;
-        for (let i = 0; i < lines.length - 1; i++) {
-          charCount += lines[i].length + 1;
-          // Check if next line starts a new item (number, bullet, or heading)
-          const nextLine = lines[i + 1];
-          if (nextLine && /^(\d+\.|[-*]|#{1,3}\s)/.test(nextLine.trim()) && charCount > 100) {
-            goodEnd = pos + charCount;
-            break;
-          }
-        }
-        if (goodEnd !== -1) {
-          end = goodEnd;
+        const last = mergedRanges[mergedRanges.length - 1];
+        // Merge if overlapping or adjacent
+        if (range[0] <= last[1] + 1) {
+          last[1] = Math.max(last[1], range[1]);
+        } else {
+          mergedRanges.push(range);
         }
       }
-
-      let snippet = content.slice(start, end).trim();
-      if (start > 0) snippet = "..." + snippet;
-      if (end < content.length) snippet = snippet + "...";
-      snippets.push(snippet);
     }
 
-    return snippets.join("\n\n---\n\n");
+    // Extract snippets with line numbers
+    const snippets: string[] = [];
+    for (const [start, end] of mergedRanges) {
+      const lineNums = `[${start + 1}-${end + 1}]`; // 1-indexed for display
+      const snippetLines = lines.slice(start, end + 1);
+      let snippet = snippetLines.join("\n");
+
+      // Add "..." if there's more content after
+      if (end < lines.length - 1) {
+        snippet += "\n...";
+      }
+
+      snippets.push(`${lineNums}\n${snippet}`);
+    }
+
+    return snippets.join("\n\n");
   }
 
   search(query: string, limit: number = 20): SearchResult[] {

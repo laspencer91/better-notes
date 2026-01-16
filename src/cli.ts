@@ -262,7 +262,8 @@ program
     console.log(chalk.bold(`\nFound ${results.length} results:\n`));
     for (const result of results) {
       console.log(`${chalk.cyan(result.date)} - ${chalk.bold(result.title)}`);
-      console.log(chalk.dim(result.snippet.replace(/<\/?mark>/g, "")));
+      console.log(chalk.dim(`File: ${result.filePath}`));
+      console.log(result.snippet.replace(/<\/?mark>/g, ""));
       console.log();
     }
   });
