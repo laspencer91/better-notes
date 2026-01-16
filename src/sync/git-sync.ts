@@ -93,12 +93,26 @@ export class GitSync extends EventEmitter {
     };
 
     try {
-      // Pull first if we have a remote
+      // Get remote and branch info upfront
       const hasRemote = await this.hasRemote();
+      let remoteName = "origin";
+      let currentBranch = "master";
+
+      if (hasRemote) {
+        const branchSummary = await this.git.branch();
+        currentBranch = branchSummary.current;
+        const remotes = await this.git.getRemotes();
+        remoteName = remotes[0]?.name || "origin";
+      }
+
+      // Pull first if we have a remote
       if (hasRemote) {
         try {
-          await this.git.pull({ "--rebase": "true" });
+          const pullResult = await this.git.pull(remoteName, currentBranch, { "--rebase": "true" });
           result.pulled = true;
+          if (pullResult.files.length > 0) {
+            console.log(`Pulled ${pullResult.files.length} file(s) from ${remoteName}/${currentBranch}`);
+          }
         } catch (error) {
           // Check for conflicts
           const status = await this.git.status();
@@ -106,7 +120,11 @@ export class GitSync extends EventEmitter {
             this.emit("conflict", status.conflicted);
             throw new Error(`Merge conflicts in: ${status.conflicted.join(", ")}`);
           }
+          // Log other pull errors
+          console.error(`Pull failed: ${(error as Error).message}`);
         }
+      } else {
+        console.log("No remote configured, skipping pull");
       }
 
       // Check for changes
@@ -141,7 +159,7 @@ export class GitSync extends EventEmitter {
         // Push if enabled and remote exists
         if (this.config.gitSync.autoPush && hasRemote) {
           try {
-            await this.git.push();
+            await this.git.push(remoteName, currentBranch);
             result.pushed = true;
           } catch (error) {
             // Push failed, but commit succeeded - not a critical error

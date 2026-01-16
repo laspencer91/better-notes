@@ -102,19 +102,20 @@ export async function startDaemon(): Promise<void> {
   const CHECK_INTERVAL_MS = 60 * 1000; // Check every minute
 
   const performSync = async () => {
-    try {
-      const count = await indexer.rebuildIndex(noteManager);
-      log(`Index rebuilt: ${count} notes indexed`);
-    } catch (error) {
-      log(`Index rebuild failed: ${(error as Error).message}`);
-    }
-
+    // Pull from remote first so new files are included in the index
     if (config.gitSync.enabled) {
       try {
         await gitSync.sync();
       } catch (error) {
         log(`Git sync failed: ${(error as Error).message}`);
       }
+    }
+
+    try {
+      const count = await indexer.rebuildIndex(noteManager);
+      log(`Index rebuilt: ${count} notes indexed`);
+    } catch (error) {
+      log(`Index rebuild failed: ${(error as Error).message}`);
     }
 
     lastSyncTime = Date.now();
