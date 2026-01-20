@@ -159,7 +159,7 @@ export class GitSync extends EventEmitter {
         // Push if enabled and remote exists
         if (this.config.gitSync.autoPush && hasRemote) {
           try {
-            await this.git.push(remoteName, currentBranch);
+            await this.git.push(remoteName, currentBranch, ['-u']);
             result.pushed = true;
           } catch (error) {
             // Push failed, but commit succeeded - not a critical error
