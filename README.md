@@ -1,12 +1,21 @@
 # Better Notes
 
-A powerful notes management system with MCP (Model Context Protocol) integration for Claude, full-text search, and automatic git sync.
+A personal knowledge management system designed for daily journaling, meeting notes, and capturing ideas. Built with MCP (Model Context Protocol) integration for Claude, full-text search, git sync, and git activity tracking across your projects.
+
+**Use it to:**
+- Capture daily notes, meeting summaries, and ideas through Claude conversations
+- Track mentions of people (@hannah) and topics (#project) automatically
+- Search across all your notes with natural language queries
+- Monitor git activity across multiple repositories
+- Generate daily summaries combining notes and code commits
 
 ## Features
 
 - **MCP Integration**: Use Claude to create, search, and manage notes naturally
 - **Full-Text Search**: SQLite-powered search across all notes
 - **Git Auto-Sync**: Automatic commits and pushes with smart debouncing
+- **Git Activity Tracking**: Monitor commits across multiple repositories
+- **Daily Summaries**: Generate summaries combining notes and git activity
 - **Entity Extraction**: Automatically tracks @mentions for people
 - **Background Daemon**: File watching and syncing runs in the background
 - **Human-Readable Storage**: Markdown files organized by date
@@ -114,6 +123,42 @@ better-notes index rebuild
 better-notes index stats
 ```
 
+### Git Sync
+
+```bash
+# Manually sync notes with git (pull, commit, push)
+better-notes sync
+```
+
+### Git Project Tracking
+
+```bash
+# List tracked git projects
+better-notes projects --list
+
+# Scan a directory and select repos to track
+better-notes projects --add ~/Projects
+
+# Interactively remove tracked projects
+better-notes projects --remove
+```
+
+### Daily Activity & Summaries
+
+```bash
+# View git commits across tracked projects for today
+better-notes changes
+
+# View git commits for a specific date
+better-notes changes --date 2026-01-15
+
+# Create a daily summary note (notes + git activity)
+better-notes summarize
+
+# Summarize a specific date
+better-notes summarize --date 2026-01-15
+```
+
 ### Service Installation
 
 ```bash
@@ -140,6 +185,8 @@ When used with Claude, the following tools are available:
 | `list_people` | List mentioned people |
 | `search_by_category` | Filter by category |
 | `search_by_tag` | Filter by tag |
+| `get_git_changes` | View git commits across tracked projects |
+| `summarize_day` | Generate a daily summary with notes and git activity |
 
 ## File Structure
 
@@ -147,10 +194,10 @@ Notes are stored in markdown format:
 
 ```
 ~/notes/
-├── 2024/
+├── 2026/
 │   ├── 01/
-│   │   ├── 2024-01-15.md
-│   │   └── 2024-01-16.md
+│   │   ├── 2026-01-15.md
+│   │   └── 2026-01-16.md
 │   └── 02/
 │       └── ...
 ├── .index/
@@ -166,9 +213,9 @@ Notes use YAML frontmatter:
 
 ```markdown
 ---
-title: Notes for 2024-01-15
-created: 2024-01-15T09:00:00.000Z
-updated: 2024-01-15T14:30:00.000Z
+title: Notes for 2026-01-15
+created: 2026-01-15T09:00:00.000Z
+updated: 2026-01-15T14:30:00.000Z
 tags:
   - project
   - meeting
@@ -214,7 +261,11 @@ Config file: `~/.better-notes.json`
   "search": {
     "enableEntityExtraction": true,
     "maxResults": 20
-  }
+  },
+  "gitProjects": [
+    { "name": "my-app", "path": "~/Projects/my-app" },
+    { "name": "api-server", "path": "~/Projects/api-server" }
+  ]
 }
 ```
 
