@@ -78,5 +78,21 @@ export type GetDailySummaryInput = z.infer<typeof GetDailySummarySchema>;
 export type GenerateSummaryInput = z.infer<typeof GenerateSummarySchema>;
 export type ListRecentNotesInput = z.infer<typeof ListRecentNotesSchema>;
 export type GetNoteInput = z.infer<typeof GetNoteSchema>;
+export const GetGitChangesSchema = z.object({
+  date: z
+    .string()
+    .optional()
+    .describe("Date in YYYY-MM-DD format (defaults to today)"),
+});
+
+export const SummarizeDaySchema = z.object({
+  date: z
+    .string()
+    .optional()
+    .describe("Date in YYYY-MM-DD format (defaults to today)"),
+});
+
 export type SearchByCategoryInput = z.infer<typeof SearchByCategorySchema>;
 export type SearchByTagInput = z.infer<typeof SearchByTagSchema>;
+export type GetGitChangesInput = z.infer<typeof GetGitChangesSchema>;
+export type SummarizeDayInput = z.infer<typeof SummarizeDaySchema>;

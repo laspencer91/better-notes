@@ -116,6 +116,7 @@ export async function runInteractiveSetup(
     },
     summarySchedule: {},
     templates: {},
+    gitProjects: [],
   };
 
   console.log(chalk.dim("\nCreating configuration..."));

@@ -26,6 +26,11 @@ export const SummaryScheduleSchema = z.object({
   monthly: z.string().optional(), // e.g., "last 17:00"
 });
 
+export const GitProjectSchema = z.object({
+  name: z.string(),
+  path: z.string(), // Absolute path to the git repository
+});
+
 export const ConfigSchema = z.object({
   notesDirectory: z.string().default("~/notes"),
   categories: z
@@ -37,6 +42,7 @@ export const ConfigSchema = z.object({
   search: SearchConfigSchema.default({}),
   summarySchedule: SummaryScheduleSchema.default({}),
   templates: z.record(z.string(), z.string()).default({}),
+  gitProjects: z.array(GitProjectSchema).default([]),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -44,5 +50,6 @@ export type GitSyncConfig = z.infer<typeof GitSyncConfigSchema>;
 export type DaemonConfig = z.infer<typeof DaemonConfigSchema>;
 export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 export type SummarySchedule = z.infer<typeof SummaryScheduleSchema>;
+export type GitProject = z.infer<typeof GitProjectSchema>;
 
 export const DEFAULT_CONFIG: Config = ConfigSchema.parse({});
