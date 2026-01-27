@@ -8,16 +8,25 @@ import { dirname, join } from "path";
 import { readFileSync } from "fs";
 import {
   loadConfig,
+  saveConfig,
   configExists,
   getConfigPath,
   ensureDirectories,
   getNotesDirectory,
+  expandPath,
 } from "./config/index.js";
+import { Config, GitProject } from "./config/schema.js";
 import { runInteractiveSetup } from "./setup/interactive.js";
 import { startDaemon, stopDaemon, getDaemonStatus, startDaemonBackground } from "./daemon.js";
 import { NoteManager } from "./notes/manager.js";
 import { Indexer } from "./index/indexer.js";
 import { SearchEngine } from "./notes/search.js";
+import {
+  getDailyGitActivity,
+  formatGitActivity,
+  formatGitActivityMarkdown,
+  discoverGitRepos,
+} from "./sync/git-activity.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -423,6 +432,247 @@ Register-ScheduledTask -TaskName "BetterNotesDaemon" -Action $action -Trigger $t
     } else {
       console.log(chalk.yellow(`Service installation is not supported on ${platform}.`));
     }
+  });
+
+// Projects command - manage tracked git repositories
+program
+  .command("projects")
+  .description("Manage tracked git projects for daily summaries")
+  .option("-a, --add <directory>", "Scan a directory for git repos to add")
+  .option("-l, --list", "List currently tracked projects")
+  .option("-r, --remove", "Interactively remove projects")
+  .action(async (options) => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    const currentProjects = config.gitProjects || [];
+
+    if (options.list) {
+      if (currentProjects.length === 0) {
+        console.log(chalk.yellow("\nNo projects tracked. Use 'better-notes projects --add <directory>' to add some."));
+        return;
+      }
+
+      console.log(chalk.bold(`\nTracked projects (${currentProjects.length}):\n`));
+      for (const project of currentProjects) {
+        console.log(`  ${chalk.cyan(project.name)} ${chalk.dim(project.path)}`);
+      }
+      console.log();
+      return;
+    }
+
+    if (options.remove) {
+      if (currentProjects.length === 0) {
+        console.log(chalk.yellow("\nNo projects to remove."));
+        return;
+      }
+
+      const prompts = (await import("prompts")).default;
+      const { toRemove } = await prompts({
+        type: "multiselect",
+        name: "toRemove",
+        message: "Select projects to remove",
+        choices: currentProjects.map((p) => ({
+          title: `${p.name} ${chalk.dim(p.path)}`,
+          value: p.path,
+        })),
+      });
+
+      if (!toRemove || toRemove.length === 0) {
+        console.log(chalk.yellow("No projects removed."));
+        return;
+      }
+
+      const removeSet = new Set(toRemove);
+      const updated: Config = {
+        ...config,
+        gitProjects: currentProjects.filter((p) => !removeSet.has(p.path)),
+      };
+      saveConfig(updated);
+      console.log(chalk.green(`\nRemoved ${toRemove.length} project(s).`));
+      return;
+    }
+
+    // Default behavior or --add: scan directory and offer multiselect
+    const directory = options.add || undefined;
+
+    if (!directory) {
+      // No directory given - show interactive prompt to enter one
+      const prompts = (await import("prompts")).default;
+      const { dir } = await prompts({
+        type: "text",
+        name: "dir",
+        message: "Enter a directory path to scan for git repos:",
+        validate: (value) => {
+          if (!value.trim()) return "Directory path is required";
+          return true;
+        },
+      });
+
+      if (!dir) {
+        console.log(chalk.yellow("Cancelled."));
+        return;
+      }
+
+      await scanAndSelectProjects(config, dir);
+      return;
+    }
+
+    await scanAndSelectProjects(config, directory);
+  });
+
+async function scanAndSelectProjects(config: Config, directory: string): Promise<void> {
+  const prompts = (await import("prompts")).default;
+  const dirPath = expandPath(directory);
+
+  console.log(chalk.dim(`\nScanning ${dirPath} for git repositories...`));
+  const discovered = await discoverGitRepos(directory);
+
+  if (discovered.length === 0) {
+    console.log(chalk.yellow("No git repositories found in that directory."));
+    return;
+  }
+
+  console.log(chalk.green(`Found ${discovered.length} git repo(s).\n`));
+
+  const currentPaths = new Set((config.gitProjects || []).map((p) => p.path));
+
+  const { selected } = await prompts({
+    type: "multiselect",
+    name: "selected",
+    message: "Select projects to track (space to toggle, enter to confirm)",
+    choices: discovered.map((repo) => ({
+      title: `${repo.name} ${chalk.dim(repo.path)}`,
+      value: repo,
+      selected: currentPaths.has(repo.path),
+    })),
+    instructions: false,
+    hint: "- Space to select. Enter to submit.",
+  });
+
+  if (!selected || selected.length === 0) {
+    console.log(chalk.yellow("No projects selected."));
+    return;
+  }
+
+  // Merge: keep existing projects not in this directory, add selected ones
+  const selectedPaths = new Set(selected.map((s: GitProject) => s.path));
+  const existingFromOtherDirs = (config.gitProjects || []).filter(
+    (p) => !discovered.some((d) => d.path === p.path)
+  );
+  const kept = (config.gitProjects || []).filter(
+    (p) => discovered.some((d) => d.path === p.path) && selectedPaths.has(p.path)
+  );
+  const newlyAdded = selected.filter(
+    (s: GitProject) => !(config.gitProjects || []).some((p) => p.path === s.path)
+  );
+
+  const updatedProjects = [...existingFromOtherDirs, ...kept, ...newlyAdded];
+
+  const updated: Config = {
+    ...config,
+    gitProjects: updatedProjects,
+  };
+  saveConfig(updated);
+
+  console.log(chalk.green(`\nNow tracking ${updatedProjects.length} project(s) total.`));
+  if (newlyAdded.length > 0) {
+    console.log(chalk.dim(`Added: ${newlyAdded.map((p: GitProject) => p.name).join(", ")}`));
+  }
+}
+
+// Changes command - view daily git activity
+program
+  .command("changes")
+  .description("View git activity across tracked projects for a given day")
+  .option("-d, --date <date>", "Date in YYYY-MM-DD format (defaults to today)")
+  .action(async (options) => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+
+    if (!config.gitProjects || config.gitProjects.length === 0) {
+      console.log(chalk.yellow("\nNo git projects configured."));
+      console.log(chalk.dim("Use 'better-notes projects --add <directory>' to add tracked repositories."));
+      return;
+    }
+
+    const date = options.date || new Date().toISOString().split("T")[0];
+    console.log(chalk.dim(`\nFetching git activity for ${date}...\n`));
+
+    const activity = await getDailyGitActivity(config, date);
+    console.log(formatGitActivity(activity));
+  });
+
+// Summarize command - create a daily summary note with git context
+program
+  .command("summarize")
+  .description("Create a daily summary note including git activity")
+  .option("-d, --date <date>", "Date in YYYY-MM-DD format (defaults to today)")
+  .action(async (options) => {
+    if (!configExists()) {
+      console.error(chalk.red("No configuration found. Run 'better-notes init' first."));
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    ensureDirectories(config);
+    const noteManager = new NoteManager(config);
+    const indexer = await Indexer.create(config);
+
+    const date = options.date || new Date().toISOString().split("T")[0];
+
+    // Gather git activity if projects are configured
+    let gitSection = "";
+    if (config.gitProjects && config.gitProjects.length > 0) {
+      console.log(chalk.dim("Fetching git activity..."));
+      const activity = await getDailyGitActivity(config, date);
+      if (activity.totalCommits > 0) {
+        gitSection = `### Git Activity\n\n${formatGitActivityMarkdown(activity)}`;
+      }
+    }
+
+    // Get existing note content for the day
+    const existingNote = await noteManager.getNote(date);
+    let noteSummarySection = "";
+    if (existingNote && existingNote.content.trim()) {
+      const entryCount = (existingNote.content.match(/^## /gm) || []).length;
+      noteSummarySection = `### Notes\n\n${entryCount} note entr${entryCount === 1 ? "y" : "ies"} recorded today.`;
+    }
+
+    // Build summary content
+    const parts: string[] = [];
+    if (noteSummarySection) parts.push(noteSummarySection);
+    if (gitSection) parts.push(gitSection);
+
+    if (parts.length === 0) {
+      console.log(chalk.yellow(`No activity found for ${date}. No summary created.`));
+      indexer.close();
+      return;
+    }
+
+    const summaryContent = parts.join("\n\n");
+
+    const note = await noteManager.createNote({
+      date,
+      title: "Daily Summary",
+      content: summaryContent,
+      tags: ["summary"],
+      category: "summary",
+    });
+
+    indexer.indexNote(note);
+    indexer.close();
+
+    console.log(chalk.green(`\nDaily summary added to: ${note.filePath}`));
+    console.log(chalk.dim("\n--- Summary Preview ---\n"));
+    console.log(summaryContent);
   });
 
 program.parse();
