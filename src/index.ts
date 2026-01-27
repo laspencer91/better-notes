@@ -25,7 +25,13 @@ import {
   GetNoteSchema,
   SearchByCategorySchema,
   SearchByTagSchema,
+  GetGitChangesSchema,
+  SummarizeDaySchema,
 } from "./tools/definitions.js";
+import {
+  getDailyGitActivity,
+  formatGitActivityMarkdown,
+} from "./sync/git-activity.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -277,6 +283,34 @@ class BetterNotesServer {
               },
             },
             required: ["tag"],
+          },
+        },
+        {
+          name: "get_git_changes",
+          description:
+            "Get git activity across all tracked projects for a given day. Shows commits with messages, files changed, and insertions/deletions per project.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              date: {
+                type: "string",
+                description: "Date in YYYY-MM-DD format (defaults to today)",
+              },
+            },
+          },
+        },
+        {
+          name: "summarize_day",
+          description:
+            "Create a daily summary note that includes note entries and git activity across tracked projects. Appends a 'Daily Summary' entry to the day's note.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              date: {
+                type: "string",
+                description: "Date in YYYY-MM-DD format (defaults to today)",
+              },
+            },
           },
         },
       ],
@@ -544,6 +578,99 @@ class BetterNotesServer {
                 {
                   type: "text",
                   text: `Notes with #${input.tag} (${results.length}):\n\n${formatted}`,
+                },
+              ],
+            };
+          }
+
+          case "get_git_changes": {
+            const input = GetGitChangesSchema.parse(args);
+            const date = input.date || new Date().toISOString().split("T")[0];
+
+            if (!this.config.gitProjects || this.config.gitProjects.length === 0) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: "No git projects configured. Use 'better-notes projects --add <directory>' to add tracked repositories.",
+                  },
+                ],
+              };
+            }
+
+            const activity = await getDailyGitActivity(this.config, date);
+            if (activity.totalCommits === 0) {
+              const errors = activity.projects.filter((p) => p.error);
+              let text = `No git commits found for ${date}.`;
+              if (errors.length > 0) {
+                text += "\n\nWarnings:\n" + errors.map((e) => `- ${e.project.name}: ${e.error}`).join("\n");
+              }
+              return { content: [{ type: "text", text }] };
+            }
+
+            const markdown = formatGitActivityMarkdown(activity);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `## Git Activity for ${date}\n\n${markdown}`,
+                },
+              ],
+            };
+          }
+
+          case "summarize_day": {
+            const input = SummarizeDaySchema.parse(args);
+            const date = input.date || new Date().toISOString().split("T")[0];
+
+            // Gather git activity if projects configured
+            let gitSection = "";
+            if (this.config.gitProjects && this.config.gitProjects.length > 0) {
+              const activity = await getDailyGitActivity(this.config, date);
+              if (activity.totalCommits > 0) {
+                gitSection = `### Git Activity\n\n${formatGitActivityMarkdown(activity)}`;
+              }
+            }
+
+            // Get existing note content for the day
+            const existingNote = await this.noteManager.getNote(date);
+            let noteSummarySection = "";
+            if (existingNote && existingNote.content.trim()) {
+              const entryCount = (existingNote.content.match(/^## /gm) || []).length;
+              noteSummarySection = `### Notes\n\n${entryCount} note entr${entryCount === 1 ? "y" : "ies"} recorded today.`;
+            }
+
+            const parts: string[] = [];
+            if (noteSummarySection) parts.push(noteSummarySection);
+            if (gitSection) parts.push(gitSection);
+
+            if (parts.length === 0) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `No activity found for ${date}. No summary created.`,
+                  },
+                ],
+              };
+            }
+
+            const summaryContent = parts.join("\n\n");
+
+            const note = await this.noteManager.createNote({
+              date,
+              title: "Daily Summary",
+              content: summaryContent,
+              tags: ["summary"],
+              category: "summary",
+            });
+            this.indexer.indexNote(note);
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Daily summary created for ${date}:\n\nFile: ${note.filePath}\n\n${summaryContent}`,
                 },
               ],
             };
